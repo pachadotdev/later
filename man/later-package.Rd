@@ -21,6 +21,7 @@ Useful links:
 
 Authors:
 \itemize{
+  \item Charlie Gao \email{charlie.gao@posit.co} (\href{https://orcid.org/0000-0002-0750-061X}{ORCID})
   \item Winston Chang \email{winston@posit.co} (\href{https://orcid.org/0000-0002-1576-2126}{ORCID})
   \item Joe Cheng \email{joe@posit.co}
 }
