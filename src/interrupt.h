@@ -22,11 +22,16 @@
 } while(0)
 
 #include <R_ext/libextern.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 LibExtern Rboolean R_interrupts_suspended;
 LibExtern int R_interrupts_pending;
 extern void Rf_onintr(void);
 LibExtern Rboolean mbcslocale;
+#ifdef __cplusplus
+}
+#endif
 #endif
 
-
-#endif
+#endif // _INTERRUPT_H_

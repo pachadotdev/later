@@ -1,3 +1,9 @@
+test_that("later_fd C API works", {
+  skip_if(later:::using_ubsan())
+  expect_equal(later:::testfd(), 0L)
+  run_now()
+})
+
 test_that("later_fd", {
   skip_if_not_installed("nanonext")
 
@@ -111,21 +117,6 @@ test_that("later_fd() errors when passed destroyed loops", {
 
 test_that("later_fd C API works", {
   skip_if(using_ubsan())
-  env <- new.env()
-  Rcpp::cppFunction(
-    depends = 'later',
-    includes = '
-      #include <later_api.h>
-      void func(int *value, void *data) {}
-    ',
-    code = '
-      int testfd() {
-        later::later_fd(func, nullptr, 0, nullptr, 0.0, 0);
-        return 0;
-      }
-    ',
-    env = env
-  )
-  expect_equal(env$testfd(), 0L)
+  expect_equal(testfd(), 0L)
   run_now()
 })

@@ -3,6 +3,6 @@
     Code
       later_fd(identity, loop = loop)
     Condition
-      Error:
+      Error in `execLater_fd()`:
       ! CallbackRegistry does not exist.
 

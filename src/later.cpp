@@ -1,5 +1,6 @@
 #include "later.h"
-#include <Rcpp.h>
+#include "r_api.h"
+#include <R_ext/Random.h>
 #include <queue>
 #include <memory>
 #include "debug.h"
@@ -63,7 +64,7 @@ bool at_top_level() {
 
   int nframe = sys_nframe();
   if (nframe == -1) {
-    Rcpp::stop("Error occurred while calling sys.nframe()");
+    Rf_error("Error occurred while calling sys.nframe()");
   }
   return nframe == 0;
 }
@@ -85,13 +86,11 @@ bool at_top_level() {
 
 static int current_registry;
 
-// [[Rcpp::export(rng = false)]]
 void setCurrentRegistryId(int id) {
   ASSERT_MAIN_THREAD()
   current_registry = id;
 }
 
-// [[Rcpp::export(rng = false)]]
 int getCurrentRegistryId() {
   ASSERT_MAIN_THREAD()
   return current_registry;
@@ -130,14 +129,13 @@ shared_ptr<CallbackRegistry> getGlobalRegistry() {
 // parent. Any children of this registry are orphaned -- they no longer have a
 // parent. (Maybe this should be an option?)
 //
-// [[Rcpp::export(rng = false)]]
 bool deleteCallbackRegistry(int loop_id) {
   ASSERT_MAIN_THREAD()
   if (loop_id == GLOBAL_LOOP) {
-    Rcpp::stop("Can't destroy global loop.");
+    Rf_error("Can't destroy global loop.");
   }
   if (loop_id == getCurrentRegistryId()) {
-    Rcpp::stop("Can't destroy current loop.");
+    Rf_error("Can't destroy current loop.");
   }
 
   return callbackRegistryTable.remove(loop_id);
@@ -145,38 +143,34 @@ bool deleteCallbackRegistry(int loop_id) {
 
 
 // This is called when the R loop handle is GC'd.
-// [[Rcpp::export(rng = false)]]
 bool notifyRRefDeleted(int loop_id) {
   ASSERT_MAIN_THREAD()
   if (loop_id == GLOBAL_LOOP) {
-    Rcpp::stop("Can't notify that reference to global loop is deleted.");
+    Rf_error("Can't notify that reference to global loop is deleted.");
   }
   if (loop_id == getCurrentRegistryId()) {
-    Rcpp::stop("Can't notify that reference to current loop is deleted.");
+    Rf_error("Can't notify that reference to current loop is deleted.");
   }
 
   return callbackRegistryTable.notifyRRefDeleted(loop_id);
 }
 
 
-// [[Rcpp::export(rng = false)]]
 void createCallbackRegistry(int id, int parent_id) {
   ASSERT_MAIN_THREAD()
   callbackRegistryTable.create(id, parent_id);
 }
 
-// [[Rcpp::export(rng = false)]]
 bool existsCallbackRegistry(int id) {
   ASSERT_MAIN_THREAD()
   return callbackRegistryTable.exists(id);
 }
 
-// [[Rcpp::export(rng = false)]]
-Rcpp::List list_queue_(int id) {
+SEXP list_queue_(int id) {
   ASSERT_MAIN_THREAD()
   shared_ptr<CallbackRegistry> registry = callbackRegistryTable.getRegistry(id);
   if (registry == nullptr) {
-    Rcpp::stop("CallbackRegistry does not exist.");
+    Rf_error("CallbackRegistry does not exist.");
   }
   return registry->list();
 }
@@ -190,8 +184,8 @@ bool execCallbacksOne(
 ) {
   ASSERT_MAIN_THREAD()
   // execCallbacks can be called directly from C code, and the callbacks may
-  // include Rcpp code. (Should we also call wrap?)
-  Rcpp::RNGScope rngscope;
+  // include R code. Initialize RNG state.
+  GetRNGstate();
   ProtectCallbacks pcscope;
 
   // Set current loop for the duration of this function.
@@ -220,16 +214,16 @@ bool execCallbacksOne(
     execCallbacksOne(true, *it, now);
   }
 
+  PutRNGstate();
   return true;
 }
 
 // Execute callbacks for an event loop and its children.
-// [[Rcpp::export(rng = false)]]
 bool execCallbacks(double timeoutSecs, bool runAll, int loop_id) {
   ASSERT_MAIN_THREAD()
   shared_ptr<CallbackRegistry> registry = callbackRegistryTable.getRegistry(loop_id);
   if (registry == nullptr) {
-    Rcpp::stop("CallbackRegistry does not exist.");
+    Rf_error("CallbackRegistry does not exist.");
   }
 
   if (!registry->wait(timeoutSecs, true)) {
@@ -269,19 +263,17 @@ bool execCallbacksForTopLevel() {
   return any;
 }
 
-// [[Rcpp::export(rng = false)]]
 bool idle(int loop_id) {
   ASSERT_MAIN_THREAD()
   shared_ptr<CallbackRegistry> registry = callbackRegistryTable.getRegistry(loop_id);
   if (registry == nullptr) {
-    Rcpp::stop("CallbackRegistry does not exist.");
+    Rf_error("CallbackRegistry does not exist.");
   }
   return registry->empty();
 }
 
 
 static bool initialized = false;
-// [[Rcpp::export(rng = false)]]
 void ensureInitialized() {
   if (initialized) {
     return;
@@ -298,13 +290,12 @@ void ensureInitialized() {
   initialized = true;
 }
 
-// [[Rcpp::export(rng = false)]]
-std::string execLater(Rcpp::Function callback, double delaySecs, int loop_id) {
+std::string execLater(SEXP callback, double delaySecs, int loop_id) {
   ASSERT_MAIN_THREAD()
   ensureInitialized();
   shared_ptr<CallbackRegistry> registry = callbackRegistryTable.getRegistry(loop_id);
   if (registry == nullptr) {
-    Rcpp::stop("CallbackRegistry does not exist.");
+    Rf_error("CallbackRegistry does not exist.");
   }
   uint64_t callback_id = doExecLater(registry, callback, delaySecs, true);
 
@@ -324,7 +315,6 @@ bool cancel(uint64_t callback_id, int loop_id) {
   return registry->cancel(callback_id);
 }
 
-// [[Rcpp::export(rng = false)]]
 bool cancel(std::string callback_id_s, int loop_id) {
   ASSERT_MAIN_THREAD()
   uint64_t callback_id;
@@ -342,12 +332,11 @@ bool cancel(std::string callback_id_s, int loop_id) {
 
 
 
-// [[Rcpp::export(rng = false)]]
 double nextOpSecs(int loop_id) {
   ASSERT_MAIN_THREAD()
   shared_ptr<CallbackRegistry> registry = callbackRegistryTable.getRegistry(loop_id);
   if (registry == nullptr) {
-    Rcpp::stop("CallbackRegistry does not exist.");
+    Rf_error("CallbackRegistry does not exist.");
   }
 
   Optional<Timestamp> nextTime = registry->nextTimestamp();

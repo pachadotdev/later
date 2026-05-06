@@ -2,6 +2,7 @@
 #define _LATER_H_
 
 #include <memory>
+#include "r_api.h"
 #include "callback_registry.h"
 
 // This should be kept in sync with LATER_H_API_VERSION in
@@ -25,7 +26,7 @@ void ensureInitialized();
 // and later_win32.cpp.
 void ensureAutorunnerInitialized();
 
-uint64_t doExecLater(std::shared_ptr<CallbackRegistry> callbackRegistry, Rcpp::Function callback, double delaySecs, bool resetTimer);
+uint64_t doExecLater(std::shared_ptr<CallbackRegistry> callbackRegistry, SEXP callback, double delaySecs, bool resetTimer);
 uint64_t doExecLater(std::shared_ptr<CallbackRegistry> callbackRegistry, void (*callback)(void*), void* data, double delaySecs, bool resetTimer);
 
 #endif // _LATER_H_

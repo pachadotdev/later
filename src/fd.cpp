@@ -1,5 +1,5 @@
 #include "fd.h"
-#include <Rcpp.h>
+#include "r_api.h"
 #include <unistd.h>
 #include <cstdlib>
 #include <atomic>
@@ -31,14 +31,14 @@ public:
   }
 
   ThreadArgs(
-    const Rcpp::Function& func,
+    SEXP func,
     int num_fds,
     struct pollfd *fds,
     double timeout,
     int loop,
     CallbackRegistryTable& table
   ) : ThreadArgs(num_fds, fds, timeout, loop, table) {
-    callback = std::unique_ptr<Rcpp::Function>(new Rcpp::Function(func));
+    callback_sexp = func;
   }
 
   ThreadArgs(
@@ -59,7 +59,7 @@ public:
 
   Timestamp timeout;
   std::shared_ptr<std::atomic<bool>> active;
-  std::unique_ptr<Rcpp::Function> callback = nullptr;
+  PreservedSEXP callback_sexp;
   std::function<void (int *)> callback_native = nullptr;
   std::vector<struct pollfd> fds;
   std::vector<int> results;
@@ -91,9 +91,24 @@ static void later_callback(void *arg) {
   args->active->compare_exchange_strong(still_active, false);
   if (!still_active)
     return;
-  if (args->callback != nullptr) {
-    Rcpp::LogicalVector results(args->results.begin(), args->results.end());
-    (*args->callback)(results);
+  if (static_cast<SEXP>(args->callback_sexp) != R_NilValue) {
+    int n = static_cast<int>(args->results.size());
+    SEXP results_sexp = PROTECT(Rf_allocVector(LGLSXP, n));
+    for (int i = 0; i < n; i++) {
+      LOGICAL(results_sexp)[i] =
+        args->results[i] == 0 ? FALSE :
+        (args->results[i] == NA_INTEGER ? NA_LOGICAL : TRUE);
+    }
+    SEXP cb = static_cast<SEXP>(args->callback_sexp);
+    // Release args first (runs fd_waits_decr) before calling into R, so that
+    // fd_waits state is correct even if the R callback errors.
+    SEXP results_copy = results_sexp; // keep reference alive
+    (void)results_copy;
+    args.reset();
+    unwind_protect([cb, results_sexp]() -> SEXP {
+      return Rf_eval(Rf_lang2(cb, results_sexp), R_GlobalEnv);
+    });
+    UNPROTECT(1);
   } else {
     args->callback_native(args->results.data());
   }
@@ -133,16 +148,30 @@ static int wait_thread(void *arg) {
 
 }
 
-static SEXP execLater_fd_impl(const Rcpp::Function& callback, int num_fds, struct pollfd *fds, double timeout, int loop_id) {
+static SEXP execLater_fd_impl(SEXP callback, int num_fds, struct pollfd *fds, double timeout, int loop_id) {
 
   std::unique_ptr<ThreadArgs> args(new ThreadArgs(callback, num_fds, fds, timeout, loop_id, callbackRegistryTable));
   std::shared_ptr<std::atomic<bool>> active = args->active;
   tct_thrd_t thr;
 
   if (tct_thrd_create(&thr, &wait_thread, static_cast<void *>(args.release())) != tct_thrd_success)
-    Rcpp::stop("Thread creation failed");
+    Rf_error("Thread creation failed");
 
-  Rcpp::XPtr<std::shared_ptr<std::atomic<bool>>> xptr(new std::shared_ptr<std::atomic<bool>>(active), true);
+  // Wrap the shared_ptr<atomic<bool>> in an external pointer so R can hold it.
+  std::shared_ptr<std::atomic<bool>>* pActive =
+    new std::shared_ptr<std::atomic<bool>>(active);
+  SEXP xptr = PROTECT(R_MakeExternalPtr(
+    static_cast<void*>(pActive), R_NilValue, R_NilValue
+  ));
+  R_RegisterCFinalizerEx(
+    xptr,
+    [](SEXP x) {
+      delete static_cast<std::shared_ptr<std::atomic<bool>>*>(R_ExternalPtrAddr(x));
+      R_ClearExternalPtr(x);
+    },
+    TRUE
+  );
+  UNPROTECT(1);
   return xptr;
 
 }
@@ -157,35 +186,34 @@ static int execLater_fd_native(void (*func)(int *, void *), void *data, int num_
 
 }
 
-// [[Rcpp::export(rng = false)]]
-Rcpp::RObject execLater_fd(Rcpp::Function callback, Rcpp::IntegerVector readfds, Rcpp::IntegerVector writefds,
-                           Rcpp::IntegerVector exceptfds, Rcpp::NumericVector timeoutSecs, Rcpp::IntegerVector loop_id) {
+SEXP execLater_fd(SEXP callback, SEXP readfds, SEXP writefds,
+                  SEXP exceptfds, SEXP timeoutSecs, SEXP loop_id) {
 
-  const int rfds = static_cast<int>(readfds.size());
-  const int wfds = static_cast<int>(writefds.size());
-  const int efds = static_cast<int>(exceptfds.size());
+  const int rfds = Rf_length(readfds);
+  const int wfds = Rf_length(writefds);
+  const int efds = Rf_length(exceptfds);
   const int num_fds = rfds + wfds + efds;
-  const double timeout = num_fds ? timeoutSecs[0] : 0;
-  const int loop = loop_id[0];
+  const double timeout = num_fds ? Rf_asReal(timeoutSecs) : 0;
+  const int loop = INTEGER(loop_id)[0];
 
   std::vector<struct pollfd> pollfds;
   pollfds.reserve(num_fds);
   struct pollfd pfd;
 
   for (int i = 0; i < rfds; i++) {
-    pfd.fd = readfds[i];
+    pfd.fd = INTEGER(readfds)[i];
     pfd.events = POLLIN;
     pfd.revents = 0;
     pollfds.push_back(pfd);
   }
   for (int i = 0; i < wfds; i++) {
-    pfd.fd = writefds[i];
+    pfd.fd = INTEGER(writefds)[i];
     pfd.events = POLLOUT;
     pfd.revents = 0;
     pollfds.push_back(pfd);
   }
   for (int i = 0; i < efds; i++) {
-    pfd.fd = exceptfds[i];
+    pfd.fd = INTEGER(exceptfds)[i];
     pfd.events = 0;
     pfd.revents = 0;
     pollfds.push_back(pfd);
@@ -195,18 +223,18 @@ Rcpp::RObject execLater_fd(Rcpp::Function callback, Rcpp::IntegerVector readfds,
 
 }
 
-// [[Rcpp::export(rng = false)]]
-Rcpp::LogicalVector fd_cancel(Rcpp::RObject xptr) {
+SEXP fd_cancel(SEXP xptr) {
 
-  Rcpp::XPtr<std::shared_ptr<std::atomic<bool>>> active(xptr);
+  auto* pActive = static_cast<std::shared_ptr<std::atomic<bool>>*>(R_ExternalPtrAddr(xptr));
+  if (!pActive) return Rf_ScalarLogical(FALSE);
 
   bool cancelled = true;
   // atomic compare_exchange_strong:
   // if *active is true, *active is changed to false (successful cancel)
   // if *active is false (already run or cancelled), cancelled is changed to false
-  (*active)->compare_exchange_strong(cancelled, false);
+  (*pActive)->compare_exchange_strong(cancelled, false);
 
-  return cancelled;
+  return Rf_ScalarLogical(cancelled ? TRUE : FALSE);
 
 }
 

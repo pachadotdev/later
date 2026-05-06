@@ -19,39 +19,55 @@ StdFunctionCallback::StdFunctionCallback(Timestamp when, std::function<void(void
   this->callbackId = nextCallbackId++;
 }
 
-Rcpp::RObject StdFunctionCallback::rRepresentation() const {
-  using namespace Rcpp;
+SEXP StdFunctionCallback::rRepresentation() const {
   ASSERT_MAIN_THREAD()
 
-  return List::create(
-    _["id"]       = callbackId,
-    _["when"]     = when.diff_secs(Timestamp()),
-    _["callback"] = Rcpp::CharacterVector::create("C/C++ function")
-  );
+  SEXP result = PROTECT(Rf_allocVector(VECSXP, 3));
+  SEXP names  = PROTECT(Rf_allocVector(STRSXP, 3));
+  SET_STRING_ELT(names, 0, Rf_mkChar("id"));
+  SET_STRING_ELT(names, 1, Rf_mkChar("when"));
+  SET_STRING_ELT(names, 2, Rf_mkChar("callback"));
+  Rf_setAttrib(result, R_NamesSymbol, names);
+
+  SET_VECTOR_ELT(result, 0, Rf_ScalarReal(static_cast<double>(callbackId)));
+  SET_VECTOR_ELT(result, 1, Rf_ScalarReal(when.diff_secs(Timestamp())));
+  SEXP cb_name = PROTECT(Rf_allocVector(STRSXP, 1));
+  SET_STRING_ELT(cb_name, 0, Rf_mkChar("C/C++ function"));
+  SET_VECTOR_ELT(result, 2, cb_name);
+
+  UNPROTECT(3);
+  return result;
 }
 
 
 // ============================================================================
-// RcppFunctionCallback
+// RFunctionCallback
 // ============================================================================
 
-RcppFunctionCallback::RcppFunctionCallback(Timestamp when, const Rcpp::Function& func) :
+RFunctionCallback::RFunctionCallback(Timestamp when, SEXP func) :
   Callback(when),
-  func(func)
+  func_sexp(func)
 {
   ASSERT_MAIN_THREAD()
   this->callbackId = nextCallbackId++;
 }
 
-Rcpp::RObject RcppFunctionCallback::rRepresentation() const {
-  using namespace Rcpp;
+SEXP RFunctionCallback::rRepresentation() const {
   ASSERT_MAIN_THREAD()
 
-  return List::create(
-    _["id"]       = callbackId,
-    _["when"]     = when.diff_secs(Timestamp()),
-    _["callback"] = func
-  );
+  SEXP result = PROTECT(Rf_allocVector(VECSXP, 3));
+  SEXP names  = PROTECT(Rf_allocVector(STRSXP, 3));
+  SET_STRING_ELT(names, 0, Rf_mkChar("id"));
+  SET_STRING_ELT(names, 1, Rf_mkChar("when"));
+  SET_STRING_ELT(names, 2, Rf_mkChar("callback"));
+  Rf_setAttrib(result, R_NamesSymbol, names);
+
+  SET_VECTOR_ELT(result, 0, Rf_ScalarReal(static_cast<double>(callbackId)));
+  SET_VECTOR_ELT(result, 1, Rf_ScalarReal(when.diff_secs(Timestamp())));
+  SET_VECTOR_ELT(result, 2, static_cast<SEXP>(func_sexp));
+
+  UNPROTECT(2);
+  return result;
 }
 
 
@@ -59,7 +75,6 @@ Rcpp::RObject RcppFunctionCallback::rRepresentation() const {
 // CallbackRegistry
 // ============================================================================
 
-// [[Rcpp::export(rng = false)]]
 void testCallbackOrdering() {
   std::vector<StdFunctionCallback> callbacks;
   Timestamp ts;
@@ -69,21 +84,21 @@ void testCallbackOrdering() {
   }
   for (size_t i = 1; i < 100; i++) {
     if (callbacks[i] < callbacks[i-1]) {
-      ::Rcpp::stop("Callback ordering is broken [1]");
+      Rf_error("Callback ordering is broken [1]");
     }
     if (!(callbacks[i] > callbacks[i-1])) {
-      ::Rcpp::stop("Callback ordering is broken [2]");
+      Rf_error("Callback ordering is broken [2]");
     }
     if (callbacks[i-1] > callbacks[i]) {
-      ::Rcpp::stop("Callback ordering is broken [3]");
+      Rf_error("Callback ordering is broken [3]");
     }
     if (!(callbacks[i-1] < callbacks[i])) {
-      ::Rcpp::stop("Callback ordering is broken [4]");
+      Rf_error("Callback ordering is broken [4]");
     }
   }
   for (size_t i = 100; i > 1; i--) {
     if (callbacks[i-1] < callbacks[i-2]) {
-      ::Rcpp::stop("Callback ordering is broken [2]");
+      Rf_error("Callback ordering is broken [2]");
     }
   }
 }
@@ -102,11 +117,11 @@ int CallbackRegistry::getId() const {
   return id;
 }
 
-uint64_t CallbackRegistry::add(const Rcpp::Function& func, double secs) {
-  // Copies of the Rcpp::Function should only be made on the main thread.
+uint64_t CallbackRegistry::add(SEXP func, double secs) {
+  // The callback SEXP should only be stored on the main thread.
   ASSERT_MAIN_THREAD()
   Timestamp when(secs);
-  Callback_sp cb = std::make_shared<RcppFunctionCallback>(when, func);
+  Callback_sp cb = std::make_shared<RFunctionCallback>(when, func);
   Guard guard(mutex);
   queue.insert(cb);
   condvar->signal();
@@ -242,25 +257,27 @@ bool CallbackRegistry::wait(double timeoutSecs, bool recursive) const {
       waitFor = 2;
     }
     condvar->timedwait(waitFor);
-    Rcpp::checkUserInterrupt();
+    check_user_interrupt();
   }
 
   return due();
 }
 
 
-Rcpp::List CallbackRegistry::list() const {
+SEXP CallbackRegistry::list() const {
   ASSERT_MAIN_THREAD()
   Guard guard(mutex);
 
-  Rcpp::List results;
+  SEXP results = PROTECT(Rf_allocVector(VECSXP, static_cast<R_xlen_t>(queue.size())));
+  R_xlen_t i = 0;
 
   cbSet::const_iterator it;
 
   for (it = queue.begin(); it != queue.end(); it++) {
-    results.push_back((*it)->rRepresentation());
+    SET_VECTOR_ELT(results, i++, (*it)->rRepresentation());
   }
 
+  UNPROTECT(1);
   return results;
 }
 

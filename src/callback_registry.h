@@ -1,19 +1,20 @@
 #ifndef _CALLBACK_REGISTRY_H_
 #define _CALLBACK_REGISTRY_H_
 
-#include <Rcpp.h>
+#include "r_api.h"
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <set>
 #include "timestamp.h"
 #include "optional.h"
 #include "threadutils.h"
 
 // Callback is an abstract class with two subclasses. The reason that there
 // are two subclasses is because one of them is for C++ (std::function)
-// callbacks, and the other is for R (Rcpp::Function) callbacks. Because
+// callbacks, and the other is for R (cpp4r::function) callbacks. Because
 // Callbacks can be created from either the main thread or a background
-// thread, the top-level Callback class cannot contain any Rcpp objects --
+// thread, the top-level Callback class cannot contain any cpp4r objects --
 // otherwise R objects could be allocated on a background thread, which will
 // cause memory corruption.
 
@@ -38,7 +39,7 @@ public:
 
   virtual void invoke() const = 0;
 
-  virtual Rcpp::RObject rRepresentation() const = 0;
+  virtual SEXP rRepresentation() const = 0;
 
   Timestamp when;
 
@@ -55,32 +56,46 @@ public:
 
   void invoke() const {
     // See https://github.com/r-lib/later/issues/191 and https://github.com/r-lib/later/pull/241
-    Rcpp::unwindProtect([this]() {
-      BEGIN_RCPP
-      func();
-      END_RCPP
+    // C++ exceptions must NOT escape through R_UnwindProtect (which unwind_protect uses
+    // internally). R_UnwindProtect installs an RCNTXT via begincontext(); if a C++
+    // exception unwinds through it, endcontext() is never called, leaving a dangling
+    // entry in R's context stack and causing memory corruption / segfault.
+    // Convert any C++ exception to an Rf_error() call *inside* the lambda so it goes
+    // through R's longjmp mechanism, which properly calls endcontext().
+    unwind_protect([this]() -> SEXP {
+      try {
+        func();
+      } catch (const std::exception& e) {
+        Rf_error("%s", e.what());
+      } catch (...) {
+        Rf_error("C++ exception (unknown reason)");
+      }
+      return R_NilValue;
     });
   }
 
-  Rcpp::RObject rRepresentation() const;
+  SEXP rRepresentation() const;
 
 private:
   std::function<void (void)> func;
 };
 
 
-class RcppFunctionCallback : public Callback {
+class RFunctionCallback : public Callback {
 public:
-  RcppFunctionCallback(Timestamp when, const Rcpp::Function& func);
+  RFunctionCallback(Timestamp when, SEXP func);
 
   void invoke() const {
-    func();
+    SEXP f = static_cast<SEXP>(func_sexp);
+    unwind_protect([f]() -> SEXP {
+      return Rf_eval(Rf_lang1(f), R_GlobalEnv);
+    });
   }
 
-  Rcpp::RObject rRepresentation() const;
+  SEXP rRepresentation() const;
 
 private:
-  Rcpp::Function func;
+  PreservedSEXP func_sexp;
 };
 
 
@@ -102,7 +117,7 @@ private:
 
   // Most of the behavior of the registry is like a priority queue. However, a
   // std::priority_queue only allows access to the top element, and when we
-  // cancel a callback or get an Rcpp::List representation, we need random
+  // cancel a callback or get a cpp4r::list representation, we need random
   // access, so we'll use a std::set.
   typedef std::set<Callback_sp, pointer_less_than<Callback_sp> > cbSet;
   // This is a priority queue of shared pointers to Callback objects. The
@@ -126,7 +141,7 @@ public:
 
   // Add a function to the registry, to be executed at `secs` seconds in
   // the future (i.e. relative to the current time).
-  uint64_t add(const Rcpp::Function& func, double secs);
+  uint64_t add(SEXP func, double secs);
 
   // Add a C function to the registry, to be executed at `secs` seconds in
   // the future (i.e. relative to the current time).
@@ -151,7 +166,7 @@ public:
   bool wait(double timeoutSecs, bool recursive) const;
 
   // Return a List of items in the queue.
-  Rcpp::List list() const;
+  SEXP list() const;
 
   // Increment and decrement the number of active later_fd waits
   void fd_waits_incr();

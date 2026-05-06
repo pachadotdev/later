@@ -2,13 +2,11 @@
 
 #include "later.h"
 
-#include <Rcpp.h>
+#include "r_api.h"
 #include <queue>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "debug.h"
-
-using namespace Rcpp;
 
 // Whether we have initialized the message-only window.
 static int initialized = 0;
@@ -35,23 +33,19 @@ static bool executeHandlers() {
     return false;
   }
 
-  // This try-catch is meant to be similar to the BEGIN_RCPP and VOID_END_RCPP
+  // This try-catch is meant to be similar to the BEGIN_CPP4R and END_CPP4R
   // macros. They are needed for two reasons: first, if an exception occurs in
   // any of the callbacks, destructors will still execute; and second, if an
   // exception (including R-level error) occurs in a callback and it reaches
   // the top level in an R input handler, R appears to be unable to handle it
   // properly.
   // https://github.com/r-lib/later/issues/12
-  // https://github.com/RcppCore/Rcpp/issues/753
   // https://github.com/r-lib/later/issues/31
   try {
     execCallbacksForTopLevel();
   }
-  catch(Rcpp::internal::InterruptedException &e) {
+  catch(unwind_exception &e) {
     REprintf("later: interrupt occurred while executing callback.\n");
-  }
-  catch(Rcpp::LongjumpException& e){
-    REprintf("later: exception occurred while executing callback.\n");
   }
   catch(std::exception& e){
     std::string msg = "later: exception occurred while executing callback: \n";
@@ -91,19 +85,19 @@ void ensureAutorunnerInitialized() {
     wc.hInstance = NULL;
     wc.lpszClassName = class_name;
     if (!RegisterClassEx(&wc)) {
-      Rcpp::stop("Failed to register window class");
+      Rf_error("Failed to register window class");
     }
 
     hwnd = CreateWindowEx(0, class_name, "dummy_name", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, NULL, NULL);
     if (!hwnd) {
-      Rcpp::stop("Failed to create message-only window");
+      Rf_error("Failed to create message-only window");
     }
 
     initialized = 1;
   }
 }
 
-uint64_t doExecLater(std::shared_ptr<CallbackRegistry> callbackRegistry, Rcpp::Function callback, double delaySecs, bool resetTimer) {
+uint64_t doExecLater(std::shared_ptr<CallbackRegistry> callbackRegistry, SEXP callback, double delaySecs, bool resetTimer) {
   uint64_t callback_id = callbackRegistry->add(callback, delaySecs);
 
   if (resetTimer)

@@ -60,10 +60,8 @@ test_that("run_now wakes up when a background thread calls later()", {
   # Skip due to false positives on UBSAN
   skip_if(using_ubsan())
 
-  env <- new.env()
-  Rcpp::sourceCpp(system.file("bgtest.cpp", package = "later"), env = env)
   # The background task sleeps
-  env$launchBgTask(1)
+  later:::launchBgTask(1)
 
   x <- system.time({
     result <- run_now(3)
@@ -79,31 +77,7 @@ test_that("When callbacks have tied timestamps, they respect order of creation",
 
   expect_snapshot(testCallbackOrdering())
 
-  Rcpp::sourceCpp(
-    code = '
-    #include <Rcpp.h>
-    #include <later_api.h>
-
-    void* max_seen = 0;
-
-    void callback(void* data) {
-      if (data < max_seen) {
-        Rcpp::stop("Bad ordering detected");
-      }
-      max_seen = data;
-    }
-
-    // [[Rcpp::depends(later)]]
-    // [[Rcpp::export]]
-    void checkLaterOrdering() {
-      max_seen = 0;
-      for (size_t i = 0; i < 10000; i++) {
-        later::later(callback, (void*)i, 0);
-      }
-    }
-    '
-  )
-  checkLaterOrdering()
+  later:::checkLaterOrdering()
   while (!loop_empty()) {
     run_now(0.1)
   }
@@ -215,59 +189,7 @@ test_that("interrupt and exception handling, C++", {
   #
   # Some of these callbacks in turn call R functions.
 
-  Rcpp::cppFunction(
-    depends = "later",
-    includes = '
-      #include <later_api.h>
-      #include <stdio.h>
-      #include <sys/types.h>
-      #include <unistd.h>
-      #include <signal.h>
-
-      void oof(void* data) {
-        int* v = (int*)data;
-        int value = *v;
-        delete v;
-
-        if (value == 1) {
-          throw std::runtime_error("This is a C++ exception.");
-
-        } else if (value == 2) {
-          // Throw an arbitrary object
-          throw std::string();
-
-        } else if (value == 3) {
-          // Interrupt the interpreter
-          Rf_onintr();
-        } else if (value == 4) {
-          // Calls R function via Rcpp, which interrupts.
-          // sleeps.
-          Function("r_interrupt")();
-
-        } else if (value == 5) {
-          // Calls R function via Rcpp which calls stop().
-          Function("r_error")();
-
-        } else if (value == 6) {
-          // Calls the `r_error` function via R\'s C API instead of Rcpp.
-          SEXP e;
-          PROTECT(e = Rf_lang1(Rf_install("r_error")));
-
-          Rf_eval(e, R_GlobalEnv);
-
-          UNPROTECT(1);
-        }
-      }
-    ',
-    code = '
-      void cpp_error(int value) {
-        int* v = new int(value);
-        later::later(oof, v, 0);
-      }
-    '
-  )
-
-  # cpp_error() searches in the global environment for these R functions, so we
+  # later:::cpp_error() searches in the global environment for these R functions, so we
   # need to define them there.
   .GlobalEnv$r_interrupt <- function() {
     rlang::interrupt()
@@ -280,7 +202,7 @@ test_that("interrupt and exception handling, C++", {
   errored <- FALSE
   tryCatch(
     {
-      cpp_error(1)
+      later:::cpp_error(1)
       run_now(Inf)
     },
     error = function(e) errored <<- TRUE
@@ -290,7 +212,7 @@ test_that("interrupt and exception handling, C++", {
   errored <- FALSE
   tryCatch(
     {
-      cpp_error(2)
+      later:::cpp_error(2)
       run_now(-1)
     },
     error = function(e) errored <<- TRUE
@@ -300,7 +222,7 @@ test_that("interrupt and exception handling, C++", {
   errored <- FALSE
   tryCatch(
     {
-      cpp_error(5)
+      later:::cpp_error(5)
       run_now()
     },
     error = function(e) errored <<- TRUE
@@ -310,7 +232,7 @@ test_that("interrupt and exception handling, C++", {
   errored <- FALSE
   tryCatch(
     {
-      cpp_error(6)
+      later:::cpp_error(6)
       run_now()
     },
     error = function(e) errored <<- TRUE
@@ -320,7 +242,7 @@ test_that("interrupt and exception handling, C++", {
   interrupted <- FALSE
   tryCatch(
     {
-      cpp_error(3)
+      later:::cpp_error(3)
       run_now()
     },
     interrupt = function(e) interrupted <<- TRUE
@@ -330,7 +252,7 @@ test_that("interrupt and exception handling, C++", {
   interrupted <- FALSE
   tryCatch(
     {
-      cpp_error(4)
+      later:::cpp_error(4)
       run_now()
     },
     interrupt = function(e) interrupted <<- TRUE

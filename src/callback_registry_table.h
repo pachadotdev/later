@@ -1,7 +1,8 @@
 #ifndef _CALLBACK_REGISTRY_TABLE_H_
 #define _CALLBACK_REGISTRY_TABLE_H_
 
-#include <Rcpp.h>
+#include "r_api.h"
+#include <map>
 #include <memory>
 #include "threadutils.h"
 #include "debug.h"
@@ -58,7 +59,7 @@ public:
     Guard guard(&mutex);
 
     if (exists(id)) {
-      Rcpp::stop("Can't create event loop %d because it already exists.", id);
+      Rf_error("Can't create event loop %d because it already exists.", id);
     }
 
     // Each new registry is passed our mutex and condvar. These serve as a
@@ -73,7 +74,7 @@ public:
     if (parent_id != -1) {
       shared_ptr<CallbackRegistry> parent = getRegistry(parent_id);
       if (parent == nullptr) {
-        Rcpp::stop("Can't create registry. Parent with id %d does not exist.", parent_id);
+        Rf_error("Can't create registry. Parent with id %d does not exist.", parent_id);
       }
       registry->parent = parent;
       parent->children.push_back(registry);

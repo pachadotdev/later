@@ -1,6 +1,6 @@
 #ifndef _WIN32
 
-#include <Rcpp.h>
+#include "r_api.h"
 #include <R_ext/eventloop.h>
 #include <unistd.h>
 #include <queue>
@@ -10,8 +10,6 @@
 #include "timer_posix.h"
 #include "threadutils.h"
 #include "debug.h"
-
-using namespace Rcpp;
 
 #define LATER_ACTIVITY 20
 #define LATER_DUMMY_ACTIVITY 21
@@ -110,25 +108,20 @@ static void async_input_handler(void *data) {
   // future package, trying to call value(future) with plan(multisession)).
   ResetTimerOnExit resetTimerOnExit_scope;
 
-  // This try-catch is meant to be similar to the BEGIN_RCPP and VOID_END_RCPP
+  // This try-catch is meant to be similar to the BEGIN_CPP4R and END_CPP4R
   // macros. They are needed for two reasons: first, if an exception occurs in
   // any of the callbacks, destructors will still execute; and second, if an
   // exception (including R-level error) occurs in a callback and it reaches
   // the top level in an R input handler, R appears to be unable to handle it
   // properly.
   // https://github.com/r-lib/later/issues/12
-  // https://github.com/RcppCore/Rcpp/issues/753
   // https://github.com/r-lib/later/issues/31
   try {
     execCallbacksForTopLevel();
   }
-  catch(Rcpp::internal::InterruptedException &e) {
-    DEBUG_LOG("async_input_handler: caught Rcpp::internal::InterruptedException", LOG_INFO);
+  catch(unwind_exception &e) {
+    DEBUG_LOG("async_input_handler: caught unwind_exception", LOG_INFO);
     REprintf("later: interrupt occurred while executing callback.\n");
-  }
-  catch(Rcpp::LongjumpException& e){
-    DEBUG_LOG("async_input_handler: caught exception", LOG_INFO);
-    REprintf("later: exception occurred while executing callback.\n");
   }
   catch(std::exception& e){
     DEBUG_LOG("async_input_handler: caught exception", LOG_INFO);
@@ -197,7 +190,7 @@ void ensureAutorunnerInitialized() {
     int pipes[2];
     if (pipe(pipes)) {
       free(buf);
-      Rcpp::stop("Failed to create pipe");
+      Rf_error("Failed to create pipe");
       return;
     }
     pipe_out = pipes[0];
@@ -219,7 +212,7 @@ void ensureAutorunnerInitialized() {
     // See https://github.com/rstudio/httpuv/issues/78
     int dummy_pipes[2];
     if (pipe(dummy_pipes)) {
-      Rcpp::stop("Failed to create pipe");
+      Rf_error("Failed to create pipe");
       return;
     }
     dummy_pipe_out = dummy_pipes[0];
@@ -251,7 +244,7 @@ void deInitialize() {
   }
 }
 
-uint64_t doExecLater(std::shared_ptr<CallbackRegistry> callbackRegistry, Rcpp::Function callback, double delaySecs, bool resetTimer) {
+uint64_t doExecLater(std::shared_ptr<CallbackRegistry> callbackRegistry, SEXP callback, double delaySecs, bool resetTimer) {
   ASSERT_MAIN_THREAD()
   uint64_t callback_id = callbackRegistry->add(callback, delaySecs);
 
